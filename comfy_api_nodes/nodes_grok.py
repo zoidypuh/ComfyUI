@@ -30,8 +30,14 @@ from comfy_api_nodes.util import (
 
 
 _GROK_VIDEO_MODEL_API_IDS = {
-    "grok-imagine-video-1.5": "grok-imagine-video-1.5-preview",
+    "grok-imagine-video": "xai/grok-imagine-video",
+    "grok-imagine-video-1.5": "xai/grok-imagine-video-1.5-preview",
+    "grok-imagine-video-1.5-preview": "xai/grok-imagine-video-1.5-preview",
 }
+
+
+def _is_grok_video_15_model(model: str) -> bool:
+    return _GROK_VIDEO_MODEL_API_IDS.get(model, model) == "xai/grok-imagine-video-1.5-preview"
 
 
 def _extract_grok_price(response) -> float | None:
@@ -511,8 +517,8 @@ class GrokVideoNode(IO.ComfyNode):
             inputs=[
                 IO.Combo.Input(
                     "model",
-                    options=["grok-imagine-video", "grok-imagine-video-1.5"],
-                    tooltip="grok-imagine-video-1.5 currently always requires an input image.",
+                    options=["grok-imagine-video", "grok-imagine-video-1.5-preview"],
+                    tooltip="grok-imagine-video-1.5-preview currently always requires an input image.",
                 ),
                 IO.String.Input(
                     "prompt",
@@ -591,7 +597,7 @@ class GrokVideoNode(IO.ComfyNode):
         seed: int,
         image: Input.Image | None = None,
     ) -> IO.NodeOutput:
-        if image is None and model == "grok-imagine-video-1.5":
+        if image is None and _is_grok_video_15_model(model):
             raise ValueError(f"The '{model}' model requires an input image; connect one to the 'image' input.")
         image_url = None
         if image is not None:
@@ -618,7 +624,7 @@ class GrokVideoNode(IO.ComfyNode):
             ApiEndpoint(path=f"/proxy/xai/v1/videos/{initial_response.request_id}"),
             status_extractor=lambda r: r.status if r.status is not None else "complete",
             response_model=VideoStatusResponse,
-            price_extractor=_extract_grok_video_price if model == "grok-imagine-video-1.5" else _extract_grok_price,
+            price_extractor=_extract_grok_video_price if _is_grok_video_15_model(model) else _extract_grok_price,
         )
         return IO.NodeOutput(await download_url_to_video_output(response.video.url))
 
