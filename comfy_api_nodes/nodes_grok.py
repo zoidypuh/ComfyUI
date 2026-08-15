@@ -126,6 +126,10 @@ def _normalize_grok_reference_prompt(prompt: str, total_images: int, voices: lis
     return prompt
 
 
+def _is_grok_video_15_model(model: str) -> bool:
+    return _GROK_VIDEO_MODEL_API_IDS.get(model, model) == "xai/grok-imagine-video-1.5-preview"
+
+
 def _extract_grok_price(response) -> float | None:
     if response.usage and response.usage.cost_in_usd_ticks is not None:
         return response.usage.cost_in_usd_ticks / 10_000_000_000
@@ -747,7 +751,7 @@ class GrokVideoNode(IO.ComfyNode):
             ApiEndpoint(path=f"/proxy/xai/v1/videos/{initial_response.request_id}"),
             status_extractor=lambda r: r.status if r.status is not None else "complete",
             response_model=VideoStatusResponse,
-            price_extractor=_extract_grok_video_price if model == "grok-imagine-video-1.5" else _extract_grok_price,
+            price_extractor=_extract_grok_video_price if _is_grok_video_15_model(model) else _extract_grok_price,
         )
         return IO.NodeOutput(await download_url_to_video_output(response.video.url))
 
