@@ -1248,8 +1248,8 @@ class EmptyLatentImage:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "width": ("INT", {"default": 512, "min": 16, "max": MAX_RESOLUTION, "step": 8, "tooltip": "The width of the latent images in pixels."}),
-                "height": ("INT", {"default": 512, "min": 16, "max": MAX_RESOLUTION, "step": 8, "tooltip": "The height of the latent images in pixels."}),
+                "width": ("INT", {"default": 1024, "min": 16, "max": MAX_RESOLUTION, "step": 8, "tooltip": "The width of the latent images in pixels."}),
+                "height": ("INT", {"default": 1024, "min": 16, "max": MAX_RESOLUTION, "step": 8, "tooltip": "The height of the latent images in pixels."}),
                 "batch_size": ("INT", {"default": 1, "min": 1, "max": 4096, "tooltip": "The number of latent images in the batch."})
             }
         }
@@ -2539,6 +2539,7 @@ async def init_builtin_extra_nodes():
         "nodes_depth_anything_3.py",
         "nodes_seed.py",
         "nodes_text.py",
+        "nodes_loop.py",
         "nodes_sam3d_body.py",
         "nodes_marigold.py",
     ]
