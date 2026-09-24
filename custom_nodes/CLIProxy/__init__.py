@@ -61,7 +61,7 @@ def _redirected_video(name, base, model_prefixes=None):
                     "CLIProxy" + _name,
                     "CLIProxy/video/Grok",
                     replace_model_options=(
-                        model_options(_prefixes, ["grok-imagine-video", "grok-imagine-video-1.5"])
+                        model_options(_prefixes, ["grok-imagine-video", "grok-imagine-video-1.5", "grok-imagine-video-1.5-preview"])
                         if _prefixes
                         else None
                     ),
@@ -86,9 +86,13 @@ def _video_execute(base):
 CLIGrokVideo = _redirected_video(
     "GrokVideo", nodes_grok.GrokVideoNode, ("grok-imagine-video",)
 )
-CLIGrokVideoEdit = _redirected_video("GrokVideoEdit", nodes_grok.GrokVideoEditNode)
+CLIGrokVideoEdit = _redirected_video(
+    "GrokVideoEdit", nodes_grok.GrokVideoEditNode, ("grok-imagine-video",)
+)
 CLIGrokVideoReference = _redirected_video("GrokVideoReference", nodes_grok.GrokVideoReferenceNode)
-CLIGrokVideoExtend = _redirected_video("GrokVideoExtend", nodes_grok.GrokVideoExtendNode)
+CLIGrokVideoExtend = _redirected_video(
+    "GrokVideoExtend", nodes_grok.GrokVideoExtendNode, ("grok-imagine-video",)
+)
 
 
 class CLIOpenAIGPTImage(Redirected, nodes_openai.OpenAIGPTImageNodeV2):
@@ -100,7 +104,7 @@ class CLIOpenAIGPTImage(Redirected, nodes_openai.OpenAIGPTImageNodeV2):
             "CLIProxy/image/OpenAI",
             replace_model_options=model_options(
                 ("gpt-image-",),
-                ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "gpt-image-2", "gpt-image-1.5"],
+                ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "openai/gpt-image-2.5-sunburst", "gpt-image-2", "gpt-image-1.5"],
             ),
         )
 

@@ -33,7 +33,10 @@ from comfy_api_nodes.util import (
 
 
 _GROK_VIDEO_MODEL_API_IDS = {
-    "grok-imagine-video-1.5": "grok-imagine-video-1.5",
+    "grok-imagine-video": "grok-imagine-video",
+    "grok-imagine-video-1.5": "grok-imagine-video-1.5-preview",
+    "grok-imagine-video-1.5-preview": "grok-imagine-video-1.5-preview",
+    "xai/grok-imagine-video-1.5-preview": "grok-imagine-video-1.5-preview",
 }
 
 _GROK_IMAGE_MODEL_API_IDS = {
@@ -748,7 +751,7 @@ class GrokVideoEditNode(IO.ComfyNode):
             category="partner/video/Grok",
             description="Edit an existing video based on a text prompt.",
             inputs=[
-                IO.Combo.Input("model", options=["grok-imagine-video"]),
+                IO.Combo.Input("model", options=["grok-imagine-video", "grok-imagine-video-1.5", "grok-imagine-video-1.5-preview"]),
                 IO.String.Input(
                     "prompt",
                     multiline=True,
@@ -799,7 +802,7 @@ class GrokVideoEditNode(IO.ComfyNode):
             cls,
             ApiEndpoint(path="/proxy/xai/v1/videos/edits", method="POST"),
             data=VideoEditRequest(
-                model=model,
+                model=_GROK_VIDEO_MODEL_API_IDS.get(model, model),
                 video=InputUrlObject(url=await upload_video_to_comfyapi(cls, video)),
                 prompt=prompt,
                 seed=seed,
@@ -1031,6 +1034,34 @@ class GrokVideoExtendNode(IO.ComfyNode):
                     "model",
                     options=[
                         IO.DynamicCombo.Option(
+                            "grok-imagine-video-1.5-preview",
+                            [
+                                IO.Int.Input(
+                                    "duration",
+                                    default=8,
+                                    min=2,
+                                    max=10,
+                                    step=1,
+                                    tooltip="Length of the extension in seconds.",
+                                    display_mode=IO.NumberDisplay.slider,
+                                ),
+                            ],
+                        ),
+                        IO.DynamicCombo.Option(
+                            "grok-imagine-video-1.5",
+                            [
+                                IO.Int.Input(
+                                    "duration",
+                                    default=8,
+                                    min=2,
+                                    max=10,
+                                    step=1,
+                                    tooltip="Length of the extension in seconds.",
+                                    display_mode=IO.NumberDisplay.slider,
+                                ),
+                            ],
+                        ),
+                        IO.DynamicCombo.Option(
                             "grok-imagine-video",
                             [
                                 IO.Int.Input(
@@ -1103,6 +1134,7 @@ class GrokVideoExtendNode(IO.ComfyNode):
                 prompt=prompt,
                 video=InputUrlObject(url=await upload_video_to_comfyapi(cls, video)),
                 duration=model["duration"],
+                model=_GROK_VIDEO_MODEL_API_IDS.get(model["model"], model["model"]),
             ),
             response_model=VideoGenerationResponse,
         )
