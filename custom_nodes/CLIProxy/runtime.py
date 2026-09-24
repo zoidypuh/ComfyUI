@@ -166,7 +166,14 @@ def install_redirect(module) -> None:
 
     async def inline_video(cls, video, **kwargs):
         stream = video.get_stream_source()
-        raw = stream.read() if hasattr(stream, "read") else bytes(stream)
+        if hasattr(stream, "read"):
+            raw = stream.read()
+        else:
+            from pathlib import Path as _Path
+            path = _Path(stream)
+            if not path.is_file():
+                raise ValueError(f"Video source is not a readable file: {stream!r}")
+            raw = path.read_bytes()
         return f"data:video/mp4;base64,{base64.b64encode(raw).decode()}"
 
     module.sync_op = sync_op

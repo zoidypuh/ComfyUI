@@ -404,7 +404,7 @@ class OpenAIGPTImage1(IO.ComfyNode):
 
 GPT_IMAGE_QUALITIES = ("low", "medium", "high")
 GPT_IMAGE_25_QUALITIES = ("low", "medium", "high", "xhigh", "max")
-GPT_IMAGE_MODELS = ("gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "or/openai/gpt-image-2.5-sunburst", "gpt-image-2", "gpt-image-1.5", "gpt-image-1")
+GPT_IMAGE_MODELS = ("gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "openai/gpt-image-2.5-sunburst", "or/openai/gpt-image-2.5-sunburst", "gpt-image-2", "gpt-image-1.5", "gpt-image-1")
 
 GPT_IMAGE_OR_PREFIX = "or/"
 
@@ -534,7 +534,7 @@ class OpenAIGPTImageNodeV2(IO.ComfyNode):
                             _gpt_image_2_model_inputs(("auto", "opaque", "transparent"), GPT_IMAGE_25_QUALITIES),
                         ),
                     IO.DynamicCombo.Option(
-                            "or/openai/gpt-image-2.5-sunburst",
+                            "openai/gpt-image-2.5-sunburst",
                             _gpt_image_2_model_inputs(("auto", "opaque", "transparent"), GPT_IMAGE_25_QUALITIES),
                         ),
                         IO.DynamicCombo.Option(
@@ -627,10 +627,10 @@ class OpenAIGPTImageNodeV2(IO.ComfyNode):
                     "gpt-image-2": [0.0098, 0.0147],
                     "gpt-image-2.5-flare": [0.0117, 0.0176],
                     "gpt-image-2.5-sunburst": [0.0117, 0.0176],
-                    "or/openai/gpt-image-2.5-sunburst": [0.0117, 0.0176]
+                    "openai/gpt-image-2.5-sunburst": [0.0117, 0.0176]
                   };
                   $model := widgets.model;
-                  $family := ($model = "gpt-image-2.5-flare" or $model = "gpt-image-2.5-sunburst" or $model = "or/openai/gpt-image-2.5-sunburst") ? "gpt-image-2.5" : $model;
+                  $family := ($model = "gpt-image-2.5-flare" or $model = "gpt-image-2.5-sunburst" or $model = "openai/gpt-image-2.5-sunburst" or $model = "or/openai/gpt-image-2.5-sunburst") ? "gpt-image-2.5" : $model;
                   $qualityRaw := $lookup(widgets, "model.quality");
                   $quality := ($qualityRaw != null) ? $qualityRaw : "";
                   $sizeRaw := $lookup(widgets, "model.size");
