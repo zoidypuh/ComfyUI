@@ -5,8 +5,11 @@ __pycache__/
 !/input/example.png
 /models/
 /temp/
-/custom_nodes/
+/custom_nodes/*
 !custom_nodes/example_node.py.example
+!custom_nodes/CLIProxy/
+!custom_nodes/CLIProxy/**
+custom_nodes/CLIProxy/__pycache__/
 extra_model_paths.yaml
 /.vs
 .vscode/
