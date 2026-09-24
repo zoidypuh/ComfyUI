@@ -64,8 +64,10 @@ import comfy.text_encoders.hidream
 import comfy.text_encoders.ace
 import comfy.text_encoders.omnigen2
 import comfy.text_encoders.qwen_image
+import comfy.text_encoders.qwen_image21
 import comfy.text_encoders.hunyuan_image
 import comfy.text_encoders.z_image
+import comfy.text_encoders.ming_image
 import comfy.text_encoders.krea2
 import comfy.text_encoders.mage_flow
 import comfy.text_encoders.ideogram4
@@ -382,6 +384,8 @@ class CLIP:
                     o = self.cond_stage_model.encode_token_weights(tokens)
                     cond, pooled = o[:2]
                     pooled_dict = {"pooled_output": pooled}
+                    if len(o) > 2:
+                        pooled_dict.update(o[2])
                     # add clip_start_percent and clip_end_percent in pooled
                     pooled_dict["clip_start_percent"] = t_range[0]
                     pooled_dict["clip_end_percent"] = t_range[1]
@@ -826,7 +830,20 @@ class VAE:
                 self.memory_used_encode = lambda shape, dtype: (50 * (round((shape[2] + 7) / 8) * 8) * shape[3] * shape[4]) * model_management.dtype_size(dtype)
                 self.working_dtypes = [torch.bfloat16, torch.float32]
             elif "decoder.middle.0.residual.0.gamma" in sd:
-                if "decoder.upsamples.0.upsamples.0.residual.2.weight" in sd:  # Wan 2.2 VAE
+                wan22_layout = "decoder.upsamples.0.upsamples.0.residual.2.weight" in sd
+                head = sd.get("decoder.head.2.weight", None)
+                if wan22_layout and head is not None and head.ndim == 5 and head.shape[2] == 1:  # Qwen Image 2.1 VAE: Wan 2.2 layout, temporal kernel 1, no patchify, RGBA
+                    self.upscale_ratio = 16
+                    self.downscale_ratio = 16
+                    self.latent_channels = 64
+                    self.output_channels = sd["decoder.head.2.weight"].shape[0]
+                    self.pad_channel_value = 1.0  # opaque alpha for RGB input
+                    ddconfig = {"dim": sd["encoder.conv1.weight"].shape[0], "dec_dim": sd["decoder.head.0.gamma"].shape[0], "z_dim": self.latent_channels, "dim_mult": [1, 2, 4, 8, 8], "num_res_blocks": 2, "attn_scales": [], "temperal_downsample": [False, True, True, True], "dropout": 0.0, "image_channels": self.output_channels, "patch_size": 1, "temporal_kernel": 1}
+                    self.first_stage_model = comfy.ldm.wan.vae2_2.WanVAE(**ddconfig)
+                    self.working_dtypes = [torch.bfloat16, torch.float16, torch.float32]
+                    self.memory_used_encode = lambda shape, dtype: 600 * shape[2] * shape[3] * model_management.dtype_size(dtype)
+                    self.memory_used_decode = lambda shape, dtype: 900 * shape[2] * shape[3] * (16 * 16) * model_management.dtype_size(dtype)
+                elif wan22_layout:  # Wan 2.2 VAE
                     self.upscale_ratio = (lambda a: max(0, a * 4 - 3), 16, 16)
                     self.upscale_index_formula = (4, 16, 16)
                     self.downscale_ratio = (lambda a: max(0, math.floor((a + 3) / 4)), 16, 16)
@@ -1095,6 +1112,9 @@ class VAE:
         self.patcher = mp(self.first_stage_model, load_device=self.device, offload_device=offload_device, fast_disk=fast_disk)
 
         m, u = self.first_stage_model.load_state_dict(sd, strict=False, assign=self.patcher.is_dynamic())
+        if not self.patcher.is_dynamic():
+            # Lazy parameters only exist after loading the state dict.
+            self.first_stage_model.to(self.vae_dtype)
         if len(m) > 0:
             logging.warning("Missing VAE keys {}".format(m))
 
@@ -1150,9 +1170,9 @@ class VAE:
 
         decode_fn = lambda a: self.first_stage_model.decode(a.to(self.vae_dtype).to(self.device)).to(dtype=self.vae_output_dtype())
         output = self.process_output(
-            (comfy.utils.tiled_scale(samples, decode_fn, tile_x // 2, tile_y * 2, overlap, upscale_amount = self.upscale_ratio, output_device=self.output_device, pbar = pbar) +
-            comfy.utils.tiled_scale(samples, decode_fn, tile_x * 2, tile_y // 2, overlap, upscale_amount = self.upscale_ratio, output_device=self.output_device, pbar = pbar) +
-             comfy.utils.tiled_scale(samples, decode_fn, tile_x, tile_y, overlap, upscale_amount = self.upscale_ratio, output_device=self.output_device, pbar = pbar))
+            (comfy.utils.tiled_scale(samples, decode_fn, tile_x // 2, tile_y * 2, overlap, upscale_amount = self.upscale_ratio, out_channels=self.output_channels, output_device=self.output_device, pbar = pbar) +
+            comfy.utils.tiled_scale(samples, decode_fn, tile_x * 2, tile_y // 2, overlap, upscale_amount = self.upscale_ratio, out_channels=self.output_channels, output_device=self.output_device, pbar = pbar) +
+             comfy.utils.tiled_scale(samples, decode_fn, tile_x, tile_y, overlap, upscale_amount = self.upscale_ratio, out_channels=self.output_channels, output_device=self.output_device, pbar = pbar))
             / 3.0)
         return output
 
@@ -1621,9 +1641,12 @@ class TEModel(Enum):
     QWEN3VL_8B = 35
     GEMMA_4_12B = 36
     QWEN3VL_32B = 37
+    MING_IMAGE = 38
 
 
 def detect_te_model(sd):
+    if "thinker.layers.1.mlp.image_gate.proj.weight" in sd:
+        return TEModel.MING_IMAGE
     if "text_model.encoder.layers.30.mlp.fc1.weight" in sd:
         return TEModel.CLIP_G
     if "text_model.encoder.layers.22.mlp.fc1.weight" in sd:
@@ -1883,6 +1906,11 @@ def load_text_encoder_state_dicts(state_dicts=[], embedding_directory=None, clip
             clip_target.clip = comfy.text_encoders.flux.flux2_te(**llama_detect(clip_data), pruned=te_model == TEModel.MISTRAL3_24B_PRUNED_FLUX2)
             clip_target.tokenizer = comfy.text_encoders.flux.Flux2Tokenizer
             tokenizer_data["tekken_model"] = clip_data[0].get("tekken_model", None)
+        elif te_model == TEModel.MING_IMAGE:
+            tokenizer_data["tokenizer_json"] = clip_data[0].get("tokenizer_json", None)
+            quant = comfy.utils.detect_layer_quantization(clip_data[0], "")
+            clip_target.clip = comfy.text_encoders.ming_image.te(dtype_llama=clip_data[0]["thinker.norm.weight"].dtype, llama_quantization_metadata=quant)
+            clip_target.tokenizer = comfy.text_encoders.ming_image.MingImageTokenizer
         elif te_model == TEModel.GPT_OSS_20B:
             clip_target.clip = comfy.text_encoders.gpt_oss.lens_te(**llama_detect(clip_data))
             clip_target.tokenizer = comfy.text_encoders.gpt_oss.LensTokenizer
@@ -1933,6 +1961,10 @@ def load_text_encoder_state_dicts(state_dicts=[], embedding_directory=None, clip
                 clip_data[0] = comfy.utils.state_dict_prefix_replace(clip_data[0], {"model.language_model.": "model.", "model.visual.": "visual.", "lm_head.": "model.lm_head."})
                 clip_target.clip = comfy.text_encoders.joyimage.te(**llama_detect(clip_data))
                 clip_target.tokenizer = comfy.text_encoders.joyimage.JoyImageTokenizer
+            elif clip_type == CLIPType.QWEN_IMAGE and te_model == TEModel.QWEN3VL_8B:  # Qwen-Image 2.1: full Qwen3-VL-8B, last hidden state, image slots spliced by the DiT.
+                clip_data[0] = comfy.utils.state_dict_prefix_replace(clip_data[0], {"model.language_model.": "model.", "model.visual.": "visual.", "lm_head.": "model.lm_head."})
+                clip_target.clip = comfy.text_encoders.qwen_image21.te(**llama_detect(clip_data))
+                clip_target.tokenizer = comfy.text_encoders.qwen_image21.QwenImage21Tokenizer
             elif clip_type in (CLIPType.FLUX, CLIPType.FLUX2):  # Flux2 Klein reuses the Qwen3-VL LM (3-layer tap -> 12288); visual unused.
                 klein_model_type = "qwen3_8b" if te_model == TEModel.QWEN3VL_8B else "qwen3_4b"
                 clip_target.clip = comfy.text_encoders.flux.klein_te(**llama_detect(clip_data), model_type=klein_model_type)
@@ -2074,7 +2106,7 @@ def load_gligen(ckpt_path):
     model = gligen.load_gligen(data)
     if model_management.should_use_fp16():
         model = model.half()
-    return comfy.model_patcher.CoreModelPatcher(model, load_device=model_management.get_torch_device(), offload_device=model_management.unet_offload_device())
+    return comfy.model_patcher.CoreModelPatcher(model, load_device=model_management.get_torch_device(), offload_device=model_management.unet_offload_device(), fast_disk=comfy.storage.state_dict_fast_disk(data))
 
 def model_detection_error_hint(path, state_dict):
     filename = os.path.basename(path)
@@ -2323,7 +2355,7 @@ def load_diffusion_model_state_dict(sd, model_options={}, metadata=None, disable
     else:
         new_sd = model_detection.convert_diffusers_mmdit(sd, "")
         if new_sd is not None: #diffusers mmdit
-            model_config = model_detection.model_config_from_unet(new_sd, "")
+            model_config = model_detection.model_config_from_unet(new_sd, "", metadata=metadata)
             if model_config is None:
                 return None
         else: #diffusers unet
