@@ -121,15 +121,27 @@ class CLIOpenRouterLLM(Redirected, nodes_openrouter.OpenRouterLLMNode):
     @classmethod
     def define_schema(cls):
         schema = clone_schema(nodes_openrouter.OpenRouterLLMNode, "CLIProxyOpenRouterLLM", "CLIProxy/text/OpenRouter")
+        schema.display_name = "CLIProxy LLM"
+        comfy_io = __import__("comfy_api.latest", fromlist=["IO"]).IO
         for index, item in enumerate(schema.inputs):
-            if getattr(item, "id", None) == "model":
-                schema.inputs[index] = __import__("comfy_api.latest", fromlist=["IO"]).IO.String.Input(
+            item_id = getattr(item, "id", None)
+            if item_id == "model":
+                schema.inputs[index] = comfy_io.String.Input(
                     "model",
                     default="grok-4.6",
                     tooltip="ClipProxy model ID from /v1/models. Endpoint must be the /v1 root, not /chat/completions or /responses.",
                 )
-                break
-        comfy_io = __import__("comfy_api.latest", fromlist=["IO"]).IO
+            elif item_id == "api_key":
+                item.display_name = "api key"
+                item.advanced = False
+            elif item_id == "system_prompt":
+                item.display_name = "system prompt"
+                item.advanced = False
+        by_id = {item.id: item for item in schema.inputs}
+        widget_order = ["prompt", "model", "api_key", "seed", "system_prompt"]
+        schema.inputs = [by_id[item_id] for item_id in widget_order] + [
+            item for item in schema.inputs if item.id not in widget_order
+        ]
         schema.inputs.extend(
             [
                 comfy_io.Image.Input(
@@ -144,24 +156,36 @@ class CLIOpenRouterLLM(Redirected, nodes_openrouter.OpenRouterLLMNode):
                     optional=True,
                     tooltip="Second optional image sent to the selected multimodal model.",
                 ),
+                comfy_io.Image.Input(
+                    "image_3",
+                    display_name="image 3",
+                    optional=True,
+                    tooltip="Third optional image sent to the selected multimodal model.",
+                ),
             ]
         )
         return schema
 
     @classmethod
-    async def execute(cls, endpoint, api_key, model, image_1=None, image_2=None, **kwargs):
-        images = [image for image in (image_1, image_2) if image is not None]
+    async def execute(cls, endpoint, api_key, model, image_1=None, image_2=None, image_3=None, **kwargs):
+        images = [image for image in (image_1, image_2, image_3) if image is not None]
         # The copied OpenRouter implementation validates against its curated list.
-        # Add the manually entered ID as a zero-cost, text-only runtime spec.
+        # Add the manually entered ID as a zero-cost runtime spec and raise the
+        # image cap to every image actually connected (at least 3).
+        image_cap = max(len(images), 3) if images else 0
         if model not in nodes_openrouter._MODELS_BY_SLUG:
             nodes_openrouter._MODELS_BY_SLUG[model] = nodes_openrouter._ModelSpec(
-                model, "standard", 0, 0, max_images=2 if images else 0
+                model, "standard", 0, 0, max_images=image_cap
             )
         elif images:
             spec = nodes_openrouter._MODELS_BY_SLUG[model]
             if spec.max_images < len(images):
                 nodes_openrouter._MODELS_BY_SLUG[model] = nodes_openrouter._ModelSpec(
-                    model, spec.profile, spec.price_in, spec.price_out, max_images=len(images)
+                    model,
+                    spec.profile,
+                    spec.price_in,
+                    spec.price_out,
+                    max_images=max(len(images), 3),
                 )
         token = cls._with_connection(endpoint, api_key)
         try:
