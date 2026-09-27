@@ -129,7 +129,16 @@ class CLIOpenRouterLLM(Redirected, nodes_openrouter.OpenRouterLLMNode):
                     tooltip="ClipProxy model ID from /v1/models. Endpoint must be the /v1 root, not /chat/completions or /responses.",
                 )
                 break
+        schema.display_name = "LLM"
         comfy_io = __import__("comfy_api.latest", fromlist=["IO"]).IO
+        schema.inputs.append(
+            comfy_io.String.Input(
+                "effort",
+                display_name="effort",
+                default="",
+                tooltip="Reasoning effort sent as reasoning.effort. Leave blank to omit reasoning.",
+            )
+        )
         schema.inputs.extend(
             [
                 comfy_io.Image.Input(
@@ -149,8 +158,9 @@ class CLIOpenRouterLLM(Redirected, nodes_openrouter.OpenRouterLLMNode):
         return schema
 
     @classmethod
-    async def execute(cls, endpoint, api_key, model, image_1=None, image_2=None, **kwargs):
+    async def execute(cls, endpoint, api_key, model, image_1=None, image_2=None, effort="", **kwargs):
         images = [image for image in (image_1, image_2) if image is not None]
+        effort_text = effort.strip() if isinstance(effort, str) else ""
         # The copied OpenRouter implementation validates against its curated list.
         # Add the manually entered ID as a zero-cost, text-only runtime spec.
         if model not in nodes_openrouter._MODELS_BY_SLUG:
@@ -166,6 +176,8 @@ class CLIOpenRouterLLM(Redirected, nodes_openrouter.OpenRouterLLMNode):
         token = cls._with_connection(endpoint, api_key)
         try:
             model_payload = {"model": model}
+            if effort_text:
+                model_payload["reasoning_effort"] = effort_text
             if images:
                 model_payload["images"] = {
                     f"image_{index}": image for index, image in enumerate(images, start=1)

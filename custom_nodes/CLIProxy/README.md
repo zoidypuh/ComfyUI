@@ -22,7 +22,7 @@ Included nodes:
 - Grok Video Edit
 - Grok Reference-to-Video
 - Grok Video Extend
-- OpenRouter LLM (free model ID, optional `image 1` and `image 2` inputs)
+- LLM (free model ID, free-text `effort`, optional `image 1` and `image 2` inputs)
 
 The copied source modules remain in this directory so upstream API-node files
 are not modified. `runtime.py` rewrites Comfy proxy paths to the configured
