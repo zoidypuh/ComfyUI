@@ -50,23 +50,66 @@ class CLIGrokImageEdit(Redirected, nodes_grok.GrokImageEditNodeV2):
             cls._reset_connection(token)
 
 
-def _redirected_video(name, base, model_prefixes=None):
+def _grok_video_loop_inputs(schema):
+    """Append last-frame / loop / image-format inputs after endpoint/api_key.
+
+    Appending (instead of inserting next to ``image``) keeps widget order, so
+    saved workflows' widgets_values still map to the same widgets.
+    """
+    comfy_io = __import__("comfy_api.latest", fromlist=["IO"]).IO
+    schema.inputs.extend(
+        [
+            comfy_io.Image.Input(
+                "last_image",
+                optional=True,
+                tooltip="Optional exact last frame (sent as last_frame). Requires 'image'.",
+            ),
+            comfy_io.Boolean.Input(
+                "loop",
+                default=False,
+                optional=True,
+                tooltip="Loop: send the start 'image' as last_frame too, so the video ends on its first frame. Requires 'image'.",
+            ),
+            comfy_io.Combo.Input(
+                "image_format",
+                options=["png", "jpeg"],
+                default="png",
+                optional=True,
+                tooltip="Encoding for image and last_frame. png = full-resolution lossless; jpeg = full resolution at jpeg_quality. Never resized.",
+            ),
+            comfy_io.Int.Input(
+                "jpeg_quality",
+                default=90,
+                min=1,
+                max=100,
+                step=1,
+                optional=True,
+                tooltip="JPEG quality (1-100). Used only when image_format is jpeg.",
+            ),
+        ]
+    )
+    return schema
+
+
+def _redirected_video(name, base, model_prefixes=None, extend_schema=None):
+    def _define(cls, _base=base, _name=name, _prefixes=model_prefixes, _extend=extend_schema):
+        schema = clone_schema(
+            _base,
+            "CLIProxy" + _name,
+            "CLIProxy/video/Grok",
+            replace_model_options=(
+                model_options(_prefixes, ["grok-imagine-video", "grok-imagine-video-1.5", "grok-imagine-video-1.5-preview"])
+                if _prefixes
+                else None
+            ),
+        )
+        return _extend(schema) if _extend else schema
+
     return type(
         name,
         (Redirected, base),
         {
-            "define_schema": classmethod(
-                lambda cls, _base=base, _name=name, _prefixes=model_prefixes: clone_schema(
-                    _base,
-                    "CLIProxy" + _name,
-                    "CLIProxy/video/Grok",
-                    replace_model_options=(
-                        model_options(_prefixes, ["grok-imagine-video", "grok-imagine-video-1.5", "grok-imagine-video-1.5-preview"])
-                        if _prefixes
-                        else None
-                    ),
-                )
-            ),
+            "define_schema": classmethod(_define),
             "execute": classmethod(_video_execute(base)),
         },
     )
@@ -84,7 +127,7 @@ def _video_execute(base):
 
 
 CLIGrokVideo = _redirected_video(
-    "GrokVideo", nodes_grok.GrokVideoNode, ("grok-imagine-video",)
+    "GrokVideo", nodes_grok.GrokVideoNode, ("grok-imagine-video",), _grok_video_loop_inputs
 )
 CLIGrokVideoEdit = _redirected_video(
     "GrokVideoEdit", nodes_grok.GrokVideoEditNode, ("grok-imagine-video",)

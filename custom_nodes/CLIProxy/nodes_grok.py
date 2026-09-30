@@ -32,6 +32,43 @@ from comfy_api_nodes.util import (
 )
 
 
+class VideoGenerationRequestWithLastFrame(VideoGenerationRequest):
+    """VideoGenerationRequest plus xAI's ``last_frame`` (exact final frame)."""
+
+    last_frame: InputUrlObject | None = None
+
+
+def _grok_video_png_data_url(image: torch.Tensor) -> str:
+    """Full-resolution lossless PNG data URL (no downscale, no lossy compression)."""
+    return f"data:image/png;base64,{tensor_to_base64_string(image, total_pixels=None)}"
+
+
+def _grok_video_jpeg_data_url(image: torch.Tensor, quality: int) -> str:
+    """Full-resolution JPEG data URL at the given quality. Never resizes."""
+    import base64
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    value = image.detach().cpu()
+    if value.ndim == 4:
+        value = value[0]
+    arr = (value.numpy().clip(0, 1) * 255).round().astype(np.uint8)
+    if arr.ndim == 3 and arr.shape[-1] == 1:
+        arr = arr[..., 0]
+    pil = Image.fromarray(arr).convert("RGB")
+    buf = io.BytesIO()
+    pil.save(buf, format="JPEG", quality=int(quality))
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def _grok_video_data_url(image: torch.Tensor, image_format: str, jpeg_quality: int) -> str:
+    if image_format == "jpeg":
+        return _grok_video_jpeg_data_url(image, jpeg_quality)
+    return _grok_video_png_data_url(image)
+
+
 _GROK_VIDEO_MODEL_API_IDS = {
     "grok-imagine-video": "grok-imagine-video",
     "grok-imagine-video-1.5": "grok-imagine-video-1.5-preview",
@@ -708,22 +745,47 @@ class GrokVideoNode(IO.ComfyNode):
         duration: int,
         seed: int,
         image: Input.Image | None = None,
+        last_image: Input.Image | None = None,
+        loop: bool = False,
+        image_format: str = "png",
+        jpeg_quality: int = 90,
     ) -> IO.NodeOutput:
         if resolution == "1080p" and model not in ("grok-imagine-video-1.5", "grok-imagine-video-1.5-preview"):
             raise ValueError(f"1080p resolution is only available for grok-imagine-video-1.5, not '{model}'.")
+        if image is None and (loop or last_image is not None):
+            raise ValueError(
+                "'loop' and 'last_image' need a start frame: connect an image to the 'image' input."
+            )
+        if loop and last_image is not None:
+            raise ValueError(
+                "Use either 'loop' (last frame = start image) or a 'last_image' input, not both."
+            )
+        image_format = (image_format or "png").lower()
+        if image_format not in ("png", "jpeg"):
+            raise ValueError(f"image_format must be 'png' or 'jpeg', not '{image_format}'.")
+        if image_format == "jpeg" and not 1 <= int(jpeg_quality) <= 100:
+            raise ValueError(f"jpeg_quality must be between 1 and 100, not {jpeg_quality}.")
         image_url = None
+        last_frame = None
         if image is not None:
             if get_number_of_images(image) != 1:
                 raise ValueError("Only one input image is supported.")
-            image_url = InputUrlObject(url=f"data:image/png;base64,{tensor_to_base64_string(image)}")
+            image_url = InputUrlObject(url=_grok_video_data_url(image, image_format, jpeg_quality))
+            if loop:
+                last_frame = InputUrlObject(url=image_url.url)
+        if last_image is not None:
+            if get_number_of_images(last_image) != 1:
+                raise ValueError("Only one last_image is supported.")
+            last_frame = InputUrlObject(url=_grok_video_data_url(last_image, image_format, jpeg_quality))
         if image is None or model != "grok-imagine-video-1.5":
             validate_string(prompt, strip_whitespace=True, min_length=1)
         initial_response = await sync_op(
             cls,
             ApiEndpoint(path="/proxy/xai/v1/videos/generations", method="POST"),
-            data=VideoGenerationRequest(
+            data=VideoGenerationRequestWithLastFrame(
                 model=_GROK_VIDEO_MODEL_API_IDS.get(model, model),
                 image=image_url,
+                last_frame=last_frame,
                 prompt=prompt,
                 resolution=resolution,
                 duration=duration,
