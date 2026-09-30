@@ -13,7 +13,6 @@ import json
 import urllib.request
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any
 
 from comfy_api.latest import IO
 from comfy_api_nodes.util import ApiEndpoint
