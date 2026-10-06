@@ -133,8 +133,13 @@ CLIGrokVideoEdit = _redirected_video(
     "GrokVideoEdit", nodes_grok.GrokVideoEditNode, ("grok-imagine-video",)
 )
 CLIGrokVideoReference = _redirected_video("GrokVideoReference", nodes_grok.GrokVideoReferenceNode)
+def _drop_extend_price_badge(schema):
+    schema.price_badge = None
+    return schema
+
+
 CLIGrokVideoExtend = _redirected_video(
-    "GrokVideoExtend", nodes_grok.GrokVideoExtendNode, ("grok-imagine-video",)
+    "GrokVideoExtend", nodes_grok.GrokVideoExtendNode, ("grok-imagine-video",), _drop_extend_price_badge
 )
 
 

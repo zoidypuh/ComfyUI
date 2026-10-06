@@ -91,18 +91,17 @@ def discover_models() -> list[str]:
 def model_options(prefixes: tuple[str, ...], fallback: list[str]) -> list[str]:
     all_ids = discover_models()
     discovered = [m for m in all_ids if m.startswith(prefixes)]
-    for mid in all_ids:
-        if mid.startswith("openai/gpt-image-"):
-            alias = "or/" + mid
-            if alias not in discovered:
-                discovered.append(alias)
-    if not discovered:
-        return list(fallback)
+    if any(prefix.startswith("gpt-image") or prefix.startswith("openai/gpt-image") for prefix in prefixes):
+        for mid in all_ids:
+            if mid.startswith("openai/gpt-image-"):
+                alias = "or/" + mid
+                if alias not in discovered:
+                    discovered.append(alias)
     out = list(discovered)
     for mid in fallback:
-        if mid not in out and not mid.startswith(prefixes):
+        if mid not in out:
             out.append(mid)
-    return out
+    return out or list(fallback)
 
 def openai_base_url(base_url: str | None) -> str:
     """Return the OpenAI-compatible /v1 root, even if a method URL was pasted."""
