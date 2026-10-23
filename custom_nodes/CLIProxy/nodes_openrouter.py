@@ -244,6 +244,9 @@ def _build_request(
     seed: int,
     reasoning_effort: str | None,
     search_context_size: str | None,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    top_k: int | None = None,
 ) -> OpenRouterChatRequest:
     reasoning_cfg: OpenRouterReasoningConfig | None = None
     if reasoning_effort and reasoning_effort != "off":
@@ -256,6 +259,9 @@ def _build_request(
         model=slug,
         messages=_build_messages(system_prompt, prompt, media_blocks),
         seed=seed if seed > 0 else None,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k if top_k else None,
         reasoning=reasoning_cfg,
         web_search_options=web_search_cfg,
     )
@@ -357,6 +363,9 @@ class OpenRouterLLMNode(IO.ComfyNode):
         model: dict,
         seed: int,
         system_prompt: str = "",
+        temperature: float | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
     ) -> IO.NodeOutput:
         validate_string(prompt, strip_whitespace=True, min_length=1)
         slug: str = model["model"]
@@ -388,6 +397,9 @@ class OpenRouterLLMNode(IO.ComfyNode):
             seed=seed,
             reasoning_effort=reasoning_effort,
             search_context_size=search_context_size,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
         )
 
         response = await sync_op(
