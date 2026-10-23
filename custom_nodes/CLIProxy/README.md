@@ -17,6 +17,8 @@ Included nodes:
 
 - Grok Image
 - Grok Image Edit
+- Muse Image (`muse-image-1.0` on `/v1/images/generations`)
+- Muse Image Edit (`muse-image-1.0` on `/v1/images/edits`)
 - OpenAI GPT Image 2.5
 - Grok Video
 - Grok Video Edit
