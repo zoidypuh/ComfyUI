@@ -11,6 +11,7 @@ import base64
 import copy
 import json
 import urllib.request
+from urllib.parse import urlsplit
 from contextvars import ContextVar
 from dataclasses import dataclass
 
@@ -123,6 +124,7 @@ def _absolute_endpoint(endpoint: ApiEndpoint, base_url: str) -> ApiEndpoint:
         "/proxy/xai/v1",
         "/proxy/openai",
         "/proxy/openrouter/api/v1",
+        "/proxy/meta/v1",
     )
     for prefix in mappings:
         if path.startswith(prefix):
@@ -174,9 +176,35 @@ def install_redirect(module) -> None:
             raw = path.read_bytes()
         return f"data:video/mp4;base64,{base64.b64encode(raw).decode()}"
 
+    original_download_video = getattr(module, "download_url_to_video_output", None)
+
+    async def download_url_to_video_output(video_url, **kwargs):
+        # Some providers (e.g. fun/ via ClipProxy) return a relative
+        # /v1/videos/<id>/content URL; fetch it from the endpoint with the node's key.
+        ctx = _request_context.get()
+        parts = urlsplit(str(video_url or ""))
+        if ctx and not parts.scheme and not parts.netloc:
+            import io
+
+            import aiohttp
+            from comfy_api.latest import InputImpl
+
+            base = urlsplit(ctx[0])
+            absolute = f"{base.scheme}://{base.netloc}/{str(video_url).lstrip('/')}"
+            timeout = aiohttp.ClientTimeout(total=kwargs.get("timeout") or 600)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(absolute, headers={"Authorization": f"Bearer {ctx[1]}"}) as resp:
+                    body = await resp.read()
+                    if resp.status >= 400:
+                        raise Exception(f"Video download failed: HTTP {resp.status} from {absolute}: {body[:300]!r}")
+            return InputImpl.VideoFromFile(io.BytesIO(body))
+        return await original_download_video(video_url, **kwargs)
+
     module.sync_op = sync_op
     if original_poll is not None:
         module.poll_op = poll_op
+    if original_download_video is not None:
+        module.download_url_to_video_output = download_url_to_video_output
     module.upload_images_to_comfyapi = inline_images
     module.upload_video_to_comfyapi = inline_video
 

@@ -82,6 +82,18 @@ def test_effort_xhigh_is_forwarded_and_blank_omits_reasoning():
     assert typed.reasoning.effort == "max"
 
 
+def test_sampling_fields_are_forwarded_and_blank_top_p_is_omitted():
+    sampled, _ = _run_execute(temperature=1.0, top_p=0.95, top_k=40)
+    assert sampled.temperature == 1.0
+    assert sampled.top_p == 0.95
+    assert sampled.top_k == 40
+
+    omitted, _ = _run_execute(temperature=-1, top_p=1.0, top_k=0)
+    assert omitted.temperature is None
+    assert omitted.top_p is None
+    assert omitted.top_k is None
+
+
 def test_default_execute_keeps_model_prompt_and_seed():
     request, output = _run_execute()
     assert request.model == "mtplx/abliterated"
