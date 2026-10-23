@@ -1,3 +1,4 @@
+import logging
 import re
 
 import torch
@@ -38,16 +39,27 @@ class VideoGenerationRequestWithLastFrame(VideoGenerationRequest):
     last_frame: InputUrlObject | None = None
 
 
-def _grok_video_png_data_url(image: torch.Tensor) -> str:
-    """Full-resolution lossless PNG data URL (no downscale, no lossy compression)."""
-    return f"data:image/png;base64,{tensor_to_base64_string(image, total_pixels=None)}"
+# Upstream body limit: the SuperGrok OAuth endpoint (cli-chat-proxy.grok.com) rejects video
+# requests larger than 1 MiB with 400 "Failed to read request body: length limit exceeded".
+# loop=True sends the start frame twice (image + last_frame), so we keep all inline frames
+# together under this budget.
+GROK_VIDEO_FRAME_BUDGET = 900 * 1024
 
 
-def _grok_video_jpeg_data_url(image: torch.Tensor, quality: int) -> str:
-    """Full-resolution JPEG data URL at the given quality. Never resizes."""
-    import base64
-    import io
+def _grok_video_target_size(resolution: str, aspect_ratio: str) -> tuple[int, int]:
+    short = {"480p": 480, "720p": 720, "1080p": 1080}.get(resolution, 720)
+    long = short * 16 // 9
+    if aspect_ratio in ("9:16", "3:4", "2:3"):
+        return short, long
+    if aspect_ratio in ("16:9", "4:3", "3:2"):
+        return long, short
+    if aspect_ratio == "1:1":
+        return short, short
+    return long, long  # auto: only cap the long side
 
+
+def _grok_video_pil(image: torch.Tensor, max_w: int | None = None, max_h: int | None = None):
+    """Tensor -> RGB PIL image, downscaled (never upscaled) to fit max_w x max_h."""
     import numpy as np
     from PIL import Image
 
@@ -58,15 +70,129 @@ def _grok_video_jpeg_data_url(image: torch.Tensor, quality: int) -> str:
     if arr.ndim == 3 and arr.shape[-1] == 1:
         arr = arr[..., 0]
     pil = Image.fromarray(arr).convert("RGB")
+    if max_w and max_h and (pil.width > max_w or pil.height > max_h):
+        scale = min(max_w / pil.width, max_h / pil.height)
+        size = (max(1, round(pil.width * scale)), max(1, round(pil.height * scale)))
+        pil = pil.resize(size, Image.LANCZOS)
+    return pil
+
+
+def _grok_video_encode(pil, image_format: str, quality: int) -> str:
+    import base64
+    import io
+
     buf = io.BytesIO()
-    pil.save(buf, format="JPEG", quality=int(quality))
-    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-
-
-def _grok_video_data_url(image: torch.Tensor, image_format: str, jpeg_quality: int) -> str:
     if image_format == "jpeg":
-        return _grok_video_jpeg_data_url(image, jpeg_quality)
-    return _grok_video_png_data_url(image)
+        pil.save(buf, format="JPEG", quality=int(quality))
+        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+    pil.save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def _grok_video_data_urls(
+    images: list, image_format: str, jpeg_quality: int, max_w: int | None, max_h: int | None,
+    copies: int = 1,
+) -> list[str]:
+    """Encode frames resized to the output size; keep them (times copies) under the body budget.
+
+    Falls back from PNG to JPEG and lowers the JPEG quality step by step if needed.
+    """
+    pils = [_grok_video_pil(i, max_w, max_h) for i in images]
+    fmt, quality = image_format, int(jpeg_quality)
+    while True:
+        urls = [_grok_video_encode(p, fmt, quality) for p in pils]
+        total = sum(len(u) for u in urls) * copies
+        if total <= GROK_VIDEO_FRAME_BUDGET:
+            break
+        if fmt != "jpeg":
+            fmt, quality = "jpeg", min(int(jpeg_quality), 92)
+        elif quality > 40:
+            quality = max(40, quality - 6)
+        else:
+            break
+    if fmt != image_format or quality != int(jpeg_quality):
+        logging.info(
+            "Grok video: input frames re-encoded as %s q%s to fit the %d KiB upstream request limit",
+            fmt, quality, GROK_VIDEO_FRAME_BUDGET // 1024,
+        )
+    return urls
+
+
+# grok-imagine-video-1.5 treats image + last_frame as reference-to-video, which xAI caps at
+# 720p; asking for 1080p with a last_frame is rejected upstream (apikey.fun answers 400 with an
+# empty message). For loop=True at 1080p we therefore generate plain image-to-video at native
+# 1080p and close the loop locally: the last LOOP_FADE_SECONDS are cross-faded into the first
+# ones, so the clip ends exactly where it starts (output is LOOP_FADE_SECONDS shorter).
+LOOP_FADE_SECONDS = 1.0
+
+
+def _ffmpeg_exe() -> str:
+    try:
+        import imageio_ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        import shutil
+
+        exe = shutil.which("ffmpeg")
+        if not exe:
+            raise RuntimeError("ffmpeg not found (needed for the local 1080p loop cross-fade).")
+        return exe
+
+
+def _grok_loop_crossfade(video, fade_seconds: float = LOOP_FADE_SECONDS):
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+
+    import av
+    import folder_paths
+    from comfy_api.latest import InputImpl
+
+    workdir = tempfile.mkdtemp(prefix="grok_loop_", dir=folder_paths.get_temp_directory())
+    in_path = os.path.join(workdir, "in.mp4")
+    out_path = os.path.join(workdir, "loop.mp4")
+    src = video.get_stream_source()
+    if isinstance(src, str):
+        shutil.copyfile(src, in_path)
+    else:
+        src.seek(0)
+        with open(in_path, "wb") as fh:
+            fh.write(src.read())
+
+    with av.open(in_path) as container:
+        vstream = container.streams.video[0]
+        fps = float(vstream.average_rate or vstream.guessed_rate or 24)
+        nframes = vstream.frames or sum(1 for _ in container.decode(video=0))
+        has_audio = len(container.streams.audio) > 0
+    k = max(1, int(round(fade_seconds * fps)))
+    if nframes < 3 * k:
+        raise ValueError(f"Video too short ({nframes} frames) for a {fade_seconds}s loop cross-fade.")
+    fade = k / fps
+    offset = (nframes - 2 * k) / fps
+    graph = (
+        f"[0:v]trim=start_frame={k},setpts=PTS-STARTPTS,fps={fps:.6f}[body];"
+        f"[1:v]trim=end_frame={k},setpts=PTS-STARTPTS,fps={fps:.6f}[head];"
+        f"[body][head]xfade=transition=fade:duration={fade:.6f}:offset={offset:.6f},format=yuv420p[v]"
+    )
+    maps = ["-map", "[v]"]
+    if has_audio:
+        graph += (
+            f";[0:a]atrim=start={fade:.6f},asetpts=PTS-STARTPTS[ab];"
+            f"[1:a]atrim=end={fade:.6f},asetpts=PTS-STARTPTS[ah];"
+            f"[ab][ah]acrossfade=d={fade:.6f}[a]"
+        )
+        maps += ["-map", "[a]", "-c:a", "aac", "-b:a", "192k"]
+    cmd = [
+        _ffmpeg_exe(), "-y", "-v", "error", "-i", in_path, "-i", in_path, "-filter_complex", graph, *maps,
+        "-c:v", "libx264", "-crf", "14", "-preset", "slow", "-r", f"{fps:.6f}",
+        "-movflags", "+faststart", out_path,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"Loop cross-fade failed: {proc.stderr[:800]}")
+    return InputImpl.VideoFromFile(out_path)
 
 
 _GROK_VIDEO_MODEL_API_IDS = {
@@ -81,6 +207,11 @@ _GROK_IMAGE_MODEL_API_IDS = {
 }
 
 _GROK_IMAGE_QUALITY_MODELS = {"grok-imagine-image-2.0"}
+
+
+def _grok_image_base(model: str) -> str:
+    """Model ID without a ClipProxy provider prefix (fun/grok-imagine-image -> grok-imagine-image)."""
+    return str(model or "").rsplit("/", 1)[-1]
 
 _GROK_IMAGE_QUALITY_OPTIONS = ["medium", "low"]
 
@@ -283,7 +414,7 @@ class GrokImageNode(IO.ComfyNode):
                 n=number_of_images,
                 seed=seed,
                 resolution=resolution.lower(),
-                quality=quality if model in _GROK_IMAGE_QUALITY_MODELS else None,
+                quality=quality if _grok_image_base(model) in _GROK_IMAGE_QUALITY_MODELS else None,
             ),
             response_model=ImageGenerationResponse,
         )
@@ -606,7 +737,7 @@ class GrokImageEditNodeV2(IO.ComfyNode):
 
         image_tensors: list[Input.Image] = [t for t in images_dict.values() if t is not None]
         n_images = sum(get_number_of_images(t) for t in image_tensors)
-        max_images = _GROK_IMAGE_EDIT_MAX_IMAGES.get(model_id, 3)
+        max_images = _GROK_IMAGE_EDIT_MAX_IMAGES.get(_grok_image_base(model_id), 3)
         if n_images < 1:
             raise ValueError("At least one image is required for editing.")
         if n_images > max_images:
@@ -614,7 +745,7 @@ class GrokImageEditNodeV2(IO.ComfyNode):
                 f"The {model_id} model supports at most {max_images} input "
                 f"image{'s' if max_images > 1 else ''}; {n_images} are connected."
             )
-        if aspect_ratio != "auto" and model_id in _GROK_IMAGE_EDIT_ASPECT_RATIO_NEEDS_MULTIPLE and n_images == 1:
+        if aspect_ratio != "auto" and _grok_image_base(model_id) in _GROK_IMAGE_EDIT_ASPECT_RATIO_NEEDS_MULTIPLE and n_images == 1:
             raise ValueError(
                 "Custom aspect ratio is only allowed when multiple images are connected to the image input."
             )
@@ -639,7 +770,7 @@ class GrokImageEditNodeV2(IO.ComfyNode):
                 n=number_of_images,
                 seed=seed,
                 aspect_ratio=None if aspect_ratio == "auto" else aspect_ratio,
-                quality=model.get("quality") if model_id in _GROK_IMAGE_QUALITY_MODELS else None,
+                quality=model.get("quality") if _grok_image_base(model_id) in _GROK_IMAGE_QUALITY_MODELS else None,
             ),
             response_model=ImageGenerationResponse,
         )
@@ -750,7 +881,7 @@ class GrokVideoNode(IO.ComfyNode):
         image_format: str = "png",
         jpeg_quality: int = 90,
     ) -> IO.NodeOutput:
-        if resolution == "1080p" and model not in ("grok-imagine-video-1.5", "grok-imagine-video-1.5-preview"):
+        if resolution == "1080p" and "1.5" not in model:
             raise ValueError(f"1080p resolution is only available for grok-imagine-video-1.5, not '{model}'.")
         if image is None and (loop or last_image is not None):
             raise ValueError(
@@ -765,18 +896,30 @@ class GrokVideoNode(IO.ComfyNode):
             raise ValueError(f"image_format must be 'png' or 'jpeg', not '{image_format}'.")
         if image_format == "jpeg" and not 1 <= int(jpeg_quality) <= 100:
             raise ValueError(f"jpeg_quality must be between 1 and 100, not {jpeg_quality}.")
+        local_loop = loop and resolution == "1080p"
+        if last_image is not None and resolution == "1080p":
+            raise ValueError(
+                "'last_image' makes this reference-to-video, which grok-imagine-video-1.5 caps at 720p. "
+                "Use 720p, or use 'loop' (done locally at 1080p)."
+            )
         image_url = None
         last_frame = None
+        max_w, max_h = _grok_video_target_size(resolution, aspect_ratio)
         if image is not None:
             if get_number_of_images(image) != 1:
                 raise ValueError("Only one input image is supported.")
-            image_url = InputUrlObject(url=_grok_video_data_url(image, image_format, jpeg_quality))
-            if loop:
-                last_frame = InputUrlObject(url=image_url.url)
-        if last_image is not None:
-            if get_number_of_images(last_image) != 1:
-                raise ValueError("Only one last_image is supported.")
-            last_frame = InputUrlObject(url=_grok_video_data_url(last_image, image_format, jpeg_quality))
+            frames = [image]
+            if last_image is not None:
+                if get_number_of_images(last_image) != 1:
+                    raise ValueError("Only one last_image is supported.")
+                frames.append(last_image)
+            copies = 2 if (loop and not local_loop) else 1
+            urls = _grok_video_data_urls(frames, image_format, jpeg_quality, max_w, max_h, copies=copies)
+            image_url = InputUrlObject(url=urls[0])
+            if loop and not local_loop:
+                last_frame = InputUrlObject(url=urls[0])
+            if last_image is not None:
+                last_frame = InputUrlObject(url=urls[1])
         if image is None or model != "grok-imagine-video-1.5":
             validate_string(prompt, strip_whitespace=True, min_length=1)
         initial_response = await sync_op(
@@ -800,7 +943,12 @@ class GrokVideoNode(IO.ComfyNode):
             status_extractor=lambda r: r.status if r.status is not None else "complete",
             response_model=VideoStatusResponse,
         )
-        return IO.NodeOutput(await download_url_to_video_output(response.video.url))
+        video = await download_url_to_video_output(response.video.url)
+        if local_loop:
+            import asyncio
+
+            video = await asyncio.to_thread(_grok_loop_crossfade, video)
+        return IO.NodeOutput(video)
 
 
 class GrokVideoEditNode(IO.ComfyNode):
