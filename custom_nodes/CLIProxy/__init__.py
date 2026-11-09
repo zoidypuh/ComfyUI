@@ -312,21 +312,40 @@ class CLIMuseImageEdit(Redirected, nodes_meta.MuseImageEditNode):
 class CLIOpenAIGPTImage(Redirected, nodes_openai.OpenAIGPTImageNodeV2):
     @classmethod
     def define_schema(cls):
-        return clone_schema(
+        schema = clone_schema(
             nodes_openai.OpenAIGPTImageNodeV2,
             "CLIProxyOpenAIGPTImage",
             "CLIProxy/image/OpenAI",
-            replace_model_options=model_options(
-                ("gpt-image-",),
-                ["gpt-image-2.5-flare", "gpt-image-2.5-sunburst", "openai/gpt-image-2.5-sunburst", "gpt-image-2", "gpt-image-1.5"],
-            ),
         )
+        schema = _free_text_model(
+            schema,
+            "oai/gpt-image-2.5-sunburst",
+            "CLIProxy image model ID. Enter any model supported by your endpoint.",
+        )
+        schema.price_badge = None
+        return schema
 
     @classmethod
-    async def execute(cls, endpoint, api_key, **kwargs):
+    async def execute(
+        cls, endpoint, api_key, prompt, model, n, seed,
+        size="auto", custom_width=1024, custom_height=1024,
+        background="auto", quality="low", images=None, mask=None,
+    ):
+        model_payload = model if isinstance(model, dict) else {
+            "model": model.strip(),
+            "size": size,
+            "custom_width": custom_width,
+            "custom_height": custom_height,
+            "background": background,
+            "quality": quality,
+            "images": images or {},
+            "mask": mask,
+        }
         token = cls._with_connection(endpoint, api_key)
         try:
-            return await nodes_openai.OpenAIGPTImageNodeV2.execute.__func__(cls, **kwargs)
+            return await nodes_openai.OpenAIGPTImageNodeV2.execute.__func__(
+                cls, prompt=prompt, model=model_payload, n=n, seed=seed,
+            )
         finally:
             cls._reset_connection(token)
 

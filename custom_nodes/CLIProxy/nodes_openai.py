@@ -701,8 +701,7 @@ class OpenAIGPTImageNodeV2(IO.ComfyNode):
                 )
             size = f"{custom_width}x{custom_height}"
 
-        if model_id not in GPT_IMAGE_MODELS and api_model_id not in GPT_IMAGE_MODELS:
-            raise ValueError(f"Unknown model: {model_id}")
+        validate_string(model_id)
 
         if image_tensors:
             flat: list[torch.Tensor] = []
